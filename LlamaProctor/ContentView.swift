@@ -114,6 +114,7 @@ struct ContentView: View {
     @State private var latestAnalysis: [String: Any]? = nil
     @State private var isAnalyzing: Bool = false
     @StateObject private var streamManager = StreamManager()
+    @StateObject private var mongoDBService = MongoDBService()
 
     var body: some View {
         VStack(alignment: .leading) {
@@ -183,10 +184,26 @@ struct ContentView: View {
         .padding()
         .onAppear {
             startBackgroundTasks()
+            // Set app as active when it appears
+            mongoDBService.setAppActiveStatus(active: true) { success, error in
+                if let error = error {
+                    print("Failed to set app as active: \(error)")
+                } else {
+                    print("App marked as active in MongoDB")
+                }
+            }
         }
         .onDisappear {
             screenshotTimerCancellable?.cancel()
             windowTimerCancellable?.cancel()
+            // Set app as inactive when it disappears
+            mongoDBService.setAppActiveStatus(active: false) { success, error in
+                if let error = error {
+                    print("Failed to set app as inactive: \(error)")
+                } else {
+                    print("App marked as inactive in MongoDB")
+                }
+            }
         }
     }
 
@@ -337,7 +354,7 @@ struct ContentView: View {
                                 self.isAnalyzing = false
                             }
                             
-                            // Store in MongoDB (to be implemented)
+                            // Store in MongoDB
                             self.storeAnalysisInMongoDB(analysisData, image: image, windows: windows, taskDescription: taskDescription)
                             
                             // Log the API response
@@ -369,7 +386,7 @@ struct ContentView: View {
                                 self.isAnalyzing = false
                             }
                             
-                            // Store in MongoDB (to be implemented)
+                            // Store in MongoDB
                             self.storeAnalysisInMongoDB(analysisData, image: image, windows: windows, taskDescription: taskDescription)
                             
                             // Log the API response
@@ -401,9 +418,26 @@ struct ContentView: View {
     }
     
     func storeAnalysisInMongoDB(_ analysis: [String: Any], image: NSImage, windows: [String], taskDescription: String) {
-        // TODO: Implement MongoDB storage
-        // This will store the analysis along with metadata
-        print("Would store in MongoDB: \(analysis)")
+        guard let score = analysis["score"] as? Int,
+              let description = analysis["description"] as? String,
+              let suggestion = analysis["suggestion"] as? String else {
+            print("Invalid analysis data for MongoDB storage")
+            return
+        }
+        
+        // Update the focus score in MongoDB based on Llama's score
+        mongoDBService.updateFocusScore(
+            id: "1",
+            llamaScore: score,
+            description: description,
+            suggestion: suggestion
+        ) { success, error in
+            if let error = error {
+                print("Failed to update MongoDB: \(error)")
+            } else {
+                print("Successfully updated MongoDB with new analysis")
+            }
+        }
     }
 
     class ScreenshotStreamOutput: NSObject, SCStreamOutput {
