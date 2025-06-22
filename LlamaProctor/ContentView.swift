@@ -115,7 +115,7 @@ struct ContentView: View {
     @State private var isAnalyzing: Bool = false
     @StateObject private var streamManager = StreamManager()
     @StateObject private var mongoDBService = MongoDBService()
-
+    
     var body: some View {
         VStack(alignment: .leading) {
             Text("LlamaProctor Running")
@@ -219,9 +219,9 @@ struct ContentView: View {
                             // Only update if we got a new image
                             if let image = image {
                                 latestScreenshot = image
-                                // Analyze with Llama API if we have a task description and not already analyzing
-                                if !teacherTaskDescription.isEmpty && !isAnalyzing {
-                                    isAnalyzing = true
+                                // Analyze with Llama API if we have a task description
+                                // Remove the isAnalyzing check to allow concurrent requests
+                                if !teacherTaskDescription.isEmpty {
                                     analyzeStudentActivity(image: image, windows: windowsInfo, taskDescription: teacherTaskDescription)
                                 }
                             }
@@ -240,10 +240,18 @@ struct ContentView: View {
     }
     
     func analyzeStudentActivity(image: NSImage, windows: [String], taskDescription: String) {
+        // Set analyzing state for UI feedback
+        DispatchQueue.main.async {
+            self.isAnalyzing = true
+        }
+        
         guard let imageData = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: imageData),
               let pngData = bitmap.representation(using: .png, properties: [:]) else {
             print("Failed to convert image to PNG")
+            DispatchQueue.main.async {
+                self.isAnalyzing = false
+            }
             return
         }
         
@@ -256,7 +264,7 @@ struct ContentView: View {
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are an AI assistant helping teachers monitor student activity during class. Analyze the student's screen activity and compare it to the teacher's intended task. Consider all on-screen elements while putting the most weight on the active window. Provide a score out of 5 for how on-task the student is, a one-sentence brief description of what the student appears to be doing, and a short suggestion for the teacher. For the suggestion: if student is on-task, indicate 'on-task'. If not obviously on-task, indicate 'Sussy'. If truly off-task, indicate 'Needs reminder'."
+                    "content": "You are an AI assistant helping teachers monitor student activity during class. Analyze the student's screen activity and compare it to the teacher's intended task. Consider all on-screen elements while putting the most weight on the active window. Provide a score out of 5 for how on-task the student is, a one-sentence brief description of what the student appears to be doing, a very short 3-word maximum summary, and a short suggestion for the teacher. For the suggestion: if student is on-task, indicate 'on-task'. If not obviously on-task, indicate 'Sussy'. If truly off-task, indicate 'Needs reminder'."
                 ],
                 [
                     "role": "user",
@@ -288,12 +296,16 @@ struct ContentView: View {
                                 "type": "string",
                                 "description": "A short 1 sentence summary of what the student seems to be doing. Mention all important on-screen elements."
                             ],
+                            "shortDescription": [
+                                "type": "string",
+                                "description": "A very short 3-word maximum summary of the student's activity"
+                            ],
                             "suggestion": [
                                 "type": "string",
-                                "description": "A very short suggestion for the teacher. If student is on-task, indicate 'on-task'. If not obviously on-task, indicate 'Sussy'. If truly off-task, indicate 'Needs reminder'."
+                                "description": "A very short suggestion for the teacher. If student is on-task, indicate 'on-task'. If not obviously on-task, indicate 'Sussi'. If truly off-task, indicate 'Needs reminder'."
                             ]
                         ],
-                        "required": ["score", "description", "suggestion"],
+                        "required": ["score", "description", "shortDescription", "suggestion"],
                         "type": "object"
                     ]
                 ]
@@ -318,6 +330,9 @@ struct ContentView: View {
             
         } catch {
             print("Failed to serialize request: \(error)")
+            DispatchQueue.main.async {
+                self.isAnalyzing = false
+            }
             return
         }
         
@@ -352,15 +367,16 @@ struct ContentView: View {
                             DispatchQueue.main.async {
                                 self.latestAnalysis = analysisData
                                 self.isAnalyzing = false
+                                
+                                // Store in MongoDB
+                                self.storeAnalysisInMongoDB(analysisData, image: image, windows: windows, taskDescription: taskDescription)
                             }
-                            
-                            // Store in MongoDB
-                            self.storeAnalysisInMongoDB(analysisData, image: image, windows: windows, taskDescription: taskDescription)
                             
                             // Log the API response
                             print("=== API RESPONSE ===")
                             print("Score: \(analysisData["score"] ?? "N/A")/5")
                             print("Description: \(analysisData["description"] ?? "N/A")")
+                            print("Short Description: \(analysisData["shortDescription"] ?? "N/A")")
                             print("Suggestion: \(analysisData["suggestion"] ?? "N/A")")
                             print("===================")
                             
@@ -384,15 +400,16 @@ struct ContentView: View {
                             DispatchQueue.main.async {
                                 self.latestAnalysis = analysisData
                                 self.isAnalyzing = false
+                                
+                                // Store in MongoDB
+                                self.storeAnalysisInMongoDB(analysisData, image: image, windows: windows, taskDescription: taskDescription)
                             }
-                            
-                            // Store in MongoDB
-                            self.storeAnalysisInMongoDB(analysisData, image: image, windows: windows, taskDescription: taskDescription)
                             
                             // Log the API response
                             print("=== API RESPONSE ===")
                             print("Score: \(analysisData["score"] ?? "N/A")/5")
                             print("Description: \(analysisData["description"] ?? "N/A")")
+                            print("Short Description: \(analysisData["shortDescription"] ?? "N/A")")
                             print("Suggestion: \(analysisData["suggestion"] ?? "N/A")")
                             print("===================")
                             
@@ -420,6 +437,7 @@ struct ContentView: View {
     func storeAnalysisInMongoDB(_ analysis: [String: Any], image: NSImage, windows: [String], taskDescription: String) {
         guard let score = analysis["score"] as? Int,
               let description = analysis["description"] as? String,
+              let shortDescription = analysis["shortDescription"] as? String,
               let suggestion = analysis["suggestion"] as? String else {
             print("Invalid analysis data for MongoDB storage")
             return
@@ -430,6 +448,7 @@ struct ContentView: View {
             id: "1",
             llamaScore: score,
             description: description,
+            shortDescription: shortDescription,
             suggestion: suggestion
         ) { success, error in
             if let error = error {
@@ -468,7 +487,7 @@ struct ContentView: View {
             let nsImage = NSImage(size: rep.size)
             nsImage.addRepresentation(rep)
             
-            print("Successfully captured screenshot: \(width)x\(height)")
+            //print("Successfully captured screenshot: \(width)x\(height)")
             DispatchQueue.main.async { [weak self] in
                 self?.onCapture?(nsImage)
             }

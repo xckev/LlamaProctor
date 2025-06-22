@@ -68,6 +68,8 @@ class MongoDBService: ObservableObject {
         id: String = "1",
         focusScore: Int,
         description: String,
+        shortDescription: String,
+        history: [String],
         suggestion: String,
         classroom: String = "1",
         active: Bool = true,
@@ -81,9 +83,11 @@ class MongoDBService: ObservableObject {
         
         let document: BSONDocument = [
             "id": BSON(stringLiteral: id),
-            "focus-score": BSON(integerLiteral: focusScore),
+            "name": BSON(stringLiteral: "Kevin"),
+            "focusScore": BSON(integerLiteral: focusScore),
             "description": BSON(stringLiteral: description),
-            "suggestion": BSON(stringLiteral: suggestion),
+            "shortDescription": BSON(stringLiteral: shortDescription),
+            "history": .array(history.map { BSON.string($0) }),
             "classroom": BSON(stringLiteral: classroom),
             "active": BSON(booleanLiteral: active),
             "lastUpdated": BSON.datetime(Date())
@@ -187,45 +191,6 @@ class MongoDBService: ObservableObject {
         }
     }
     
-    func updateFocusScore(
-        id: String = "1",
-        llamaScore: Int,
-        description: String,
-        suggestion: String,
-        completion: @escaping (Bool, Error?) -> Void
-    ) {
-        // First, get the current document to calculate the new focus score
-        getStudentDocument(id: id) { [weak self] currentDocument, error in
-            guard let self = self else { return }
-            
-            if error != nil {
-                // If document doesn't exist, create it with initial values
-                let newFocusScore = self.calculateNewFocusScore(currentScore: 10, llamaScore: llamaScore)
-                self.upsertStudentDocument(
-                    id: id,
-                    focusScore: newFocusScore,
-                    description: description,
-                    suggestion: suggestion,
-                    completion: completion
-                )
-                return
-            }
-            
-            // Calculate new focus score based on current score and Llama score
-            let currentFocusScore = currentDocument?["focus-score"] as? Int ?? 10
-            let newFocusScore = self.calculateNewFocusScore(currentScore: currentFocusScore, llamaScore: llamaScore)
-            
-            // Update the document
-            self.upsertStudentDocument(
-                id: id,
-                focusScore: newFocusScore,
-                description: description,
-                suggestion: suggestion,
-                completion: completion
-            )
-        }
-    }
-    
     private func calculateNewFocusScore(currentScore: Int, llamaScore: Int) -> Int {
         var newScore = currentScore
         
@@ -237,6 +202,83 @@ class MongoDBService: ObservableObject {
         // If llamaScore is 3, keep the same score
         
         return newScore
+    }
+    
+    private func determineSuggestionFromFocusScore(_ focusScore: Int) -> String {
+        if focusScore >= 7 {
+            return "on-task"
+        } else if focusScore <= 3 {
+            return "needs reminder"
+        } else {
+            return "sussi"
+        }
+    }
+    
+    private func updateHistory(currentHistory: [String]?, newShortDescription: String) -> [String] {
+        var history = currentHistory ?? []
+        
+        // Add the new shortDescription to the beginning of the list
+        history.insert(newShortDescription, at: 0)
+        
+        // Keep only the 60 most recent entries
+        if history.count > 60 {
+            history = Array(history.prefix(60))
+        }
+        
+        return history
+    }
+    
+    func updateFocusScore(
+        id: String = "1",
+        llamaScore: Int,
+        description: String,
+        shortDescription: String,
+        suggestion: String,
+        completion: @escaping (Bool, Error?) -> Void
+    ) {
+        // First, get the current document to calculate the new focus score
+        getStudentDocument(id: id) { [weak self] currentDocument, error in
+            guard let self = self else { return }
+            
+            if error != nil {
+                // If document doesn't exist, create it with initial values
+                let newFocusScore = self.calculateNewFocusScore(currentScore: 10, llamaScore: llamaScore)
+                let newHistory = self.updateHistory(currentHistory: nil, newShortDescription: shortDescription)
+                self.upsertStudentDocument(
+                    id: id,
+                    focusScore: newFocusScore,
+                    description: description,
+                    shortDescription: shortDescription,
+                    history: newHistory,
+                    suggestion: suggestion,
+                    classroom: "1",
+                    active: true,
+                    completion: completion
+                )
+                return
+            }
+            
+            // Calculate new focus score based on current score and Llama score
+            let currentFocusScore = currentDocument?["focusScore"] as? Int ?? 10
+            let newFocusScore = self.calculateNewFocusScore(currentScore: currentFocusScore, llamaScore: llamaScore)
+            
+            // Update history with new shortDescription
+            let currentHistory = currentDocument?["history"] as? [String]
+            let newHistory = self.updateHistory(currentHistory: currentHistory, newShortDescription: shortDescription)
+            
+            // Update the document
+            self.upsertStudentDocument(
+                id: id,
+                focusScore: newFocusScore,
+                description: description,
+                shortDescription: shortDescription,
+                history: newHistory,
+                suggestion: suggestion,
+                classroom: "1",
+                active: true,
+                completion: completion
+            )
+        }
     }
     
     func getStudentDocument(id: String = "1", completion: @escaping ([String: Any]?, Error?) -> Void) {
