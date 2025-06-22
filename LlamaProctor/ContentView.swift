@@ -239,7 +239,7 @@ struct ContentView: View {
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are an AI assistant helping teachers monitor student activity during class. Analyze the student's screen activity and compare it to the teacher's intended task. Provide a score out of 5 for relevance, a brief description of what the student appears to be doing, and a suggestion for the teacher."
+                    "content": "You are an AI assistant helping teachers monitor student activity during class. Analyze the student's screen activity and compare it to the teacher's intended task. Consider all on-screen elements while putting the most weight on the active window. Provide a score out of 5 for how on-task the student is, a one-sentence brief description of what the student appears to be doing, and a short suggestion for the teacher. For the suggestion: if student is on-task, indicate 'on-task'. If not obviously on-task, indicate 'Sussy'. If truly off-task, indicate 'Needs reminder'."
                 ],
                 [
                     "role": "user",
@@ -265,15 +265,15 @@ struct ContentView: View {
                         "properties": [
                             "score": [
                                 "type": "integer",
-                                "description": "Score from 0 to 5 for how relevant the student's activity is to the teacher's task"
+                                "description": "Score from 0 to 5 for how on-task the student's activity is to the teacher's task"
                             ],
                             "description": [
                                 "type": "string",
-                                "description": "A short 1 sentence summary of what the student seems to be doing"
+                                "description": "A short 1 sentence summary of what the student seems to be doing. Mention all important on-screen elements."
                             ],
                             "suggestion": [
                                 "type": "string",
-                                "description": "A short 1sentence suggestion for the teacher. If student is on-task, indicate this. If not obviously relevant, infer how it may be related and advise. If truly off-task, advise gentle reminder."
+                                "description": "A very short suggestion for the teacher. If student is on-task, indicate 'on-task'. If not obviously on-task, indicate 'Sussy'. If truly off-task, indicate 'Needs reminder'."
                             ]
                         ],
                         "required": ["score", "description", "suggestion"],
