@@ -69,8 +69,6 @@ class StreamManager: NSObject, ObservableObject {
             // Only call completion if we actually got an image
             if let image = image {
                 completion(image)
-            } else {
-                print("Failed to capture screenshot, keeping previous image")
             }
             self?.isCapturing = false
         }
@@ -108,6 +106,7 @@ class StreamManager: NSObject, ObservableObject {
 struct ContentView: View {
     @State private var screenshotTimerCancellable: AnyCancellable?
     @State private var windowTimerCancellable: AnyCancellable?
+    @State private var assignmentTimerCancellable: AnyCancellable?
     @State private var windowsInfo: [String] = []
     @State private var latestScreenshot: NSImage? = nil
     @State private var teacherTaskDescription: String = ""
@@ -124,11 +123,13 @@ struct ContentView: View {
             Divider()
             
             VStack(alignment: .leading) {
-                Text("Teacher's Task Description:")
+                Text("Current Assignment from Teacher:")
                     .font(.subheadline)
-                TextField("Enter what the student should be working on...", text: $teacherTaskDescription, axis: .vertical)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .lineLimit(3...6)
+                Text(teacherTaskDescription.isEmpty ? "No assignment retrieved yet..." : teacherTaskDescription)
+                    .padding()
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(8)
+                    .foregroundColor(teacherTaskDescription.isEmpty ? .secondary : .primary)
             }
             
             Divider()
@@ -152,17 +153,32 @@ struct ContentView: View {
                             .fontWeight(.medium)
                         Text("\(analysis["score"] as? Int ?? 0)/5")
                             .foregroundColor(.blue)
+                        
+                        Spacer()
+                        
+                        Text("Summary:")
+                            .fontWeight(.medium)
+                        Text(analysis["shortDescription"] as? String ?? "Unknown")
+                            .foregroundColor(.orange)
+                            .fontWeight(.medium)
                     }
                     
-                    Text("Description:")
-                        .fontWeight(.medium)
-                    Text(analysis["description"] as? String ?? "No description available")
-                        .foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Description:")
+                            .fontWeight(.medium)
+                        Text(analysis["description"] as? String ?? "No description available")
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     
-                    Text("Suggestion:")
-                        .fontWeight(.medium)
-                    Text(analysis["suggestion"] as? String ?? "No suggestion available")
-                        .foregroundColor(.secondary)
+                    HStack {
+                        Text("Teacher Action:")
+                            .fontWeight(.medium)
+                        Text(analysis["suggestion"] as? String ?? "No suggestion available")
+                            .foregroundColor(getColorForSuggestion(analysis["suggestion"] as? String ?? ""))
+                            .fontWeight(.medium)
+                    }
                 }
                 .padding()
                 .background(Color.gray.opacity(0.1))
@@ -187,21 +203,22 @@ struct ContentView: View {
             // Set app as active when it appears
             mongoDBService.setAppActiveStatus(active: true) { success, error in
                 if let error = error {
-                    print("Failed to set app as active: \(error)")
+                    print("❌ Failed to set app as active: \(error.localizedDescription)")
                 } else {
-                    print("App marked as active in MongoDB")
+                    print("🟢 App status: Active")
                 }
             }
         }
         .onDisappear {
             screenshotTimerCancellable?.cancel()
             windowTimerCancellable?.cancel()
+            assignmentTimerCancellable?.cancel()
             // Set app as inactive when it disappears
             mongoDBService.setAppActiveStatus(active: false) { success, error in
                 if let error = error {
-                    print("Failed to set app as inactive: \(error)")
+                    print("❌ Failed to set app as inactive: \(error.localizedDescription)")
                 } else {
-                    print("App marked as inactive in MongoDB")
+                    print("🔴 App status: Inactive")
                 }
             }
         }
@@ -235,6 +252,16 @@ struct ContentView: View {
                     let windowTitles = getOpenWindowTitles()
                     windowsInfo = windowTitles
                 }
+            
+            // Assignment retrieval timer - every 5 seconds
+            assignmentTimerCancellable = Timer.publish(every: 5, on: .main, in: .common)
+                .autoconnect()
+                .sink { _ in
+                    fetchAssignmentFromMongoDB()
+                }
+            
+            // Fetch assignment immediately on startup
+            fetchAssignmentFromMongoDB()
         }
     }
     
@@ -244,10 +271,13 @@ struct ContentView: View {
             self.isAnalyzing = true
         }
         
-        guard let imageData = image.tiffRepresentation,
+        // Scale down image to 720p to reduce inference time
+        let scaledImage = scaleImageTo720p(image)
+        
+        guard let imageData = scaledImage.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: imageData),
               let pngData = bitmap.representation(using: .png, properties: [:]) else {
-            print("Failed to convert image to PNG")
+            print("❌ Image conversion failed")
             DispatchQueue.main.async {
                 self.isAnalyzing = false
             }
@@ -263,7 +293,7 @@ struct ContentView: View {
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are an AI assistant helping teachers monitor student activity during class. Analyze the student's screen activity and compare it to the teacher's intended task. Consider all on-screen elements while putting the most weight on the active window. Provide a score out of 5 for how on-task the student is, a one-sentence brief description of what the student appears to be doing, a very short 3-word maximum summary, and a short suggestion for the teacher. For the suggestion: if student is on-task, indicate 'on-task'. If not obviously on-task, indicate 'Sussy'. If truly off-task, indicate 'Needs reminder'."
+                    "content": "You are an AI assistant helping teachers monitor student activity during class. Analyze the student's screen activity and compare it to the teacher's intended task. Consider all on-screen elements while putting the most weight on the active window. Be somewhat generous with inferring how a student's activity could potentially relate to the intended task. \n\n For every query: \n - Provide a score out of 5 for how on-task the student is \n - Give a one-sentence brief description of what the student appears to be doing \n - Give a very short 3-word maximum summary \n - Provide a short suggestion for the teacher. For the suggestion: if student is on-task, indicate 'on-task'. If not obviously on-task, indicate 'Sussy'. If truly off-task, indicate 'Needs reminder'."
                 ],
                 [
                     "role": "user",
@@ -293,11 +323,11 @@ struct ContentView: View {
                             ],
                             "description": [
                                 "type": "string",
-                                "description": "A short 1 sentence summary of what the student seems to be doing. Mention all important on-screen elements."
+                                "description": "A SHORT 1 SENTENCE summary of what the student seems to be doing. Mention all important on-screen elements."
                             ],
                             "shortDescription": [
                                 "type": "string",
-                                "description": "A very short 3-word maximum summary of the student's activity"
+                                "description": "A VERY SHORT 3-WORD MAXIMUM summary of the student's activity"
                             ],
                             "suggestion": [
                                 "type": "string",
@@ -315,20 +345,12 @@ struct ContentView: View {
         var request = URLRequest(url: URL(string: "https://api.llama.com/v1/chat/completions")!)
         request.httpMethod = "POST"
         request.setValue("Bearer LLM|4223328317906442|61bxxIJdYOjFW-jmlw5ea70FkBY", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
-            
-            // Log the API request
-            print("=== API REQUEST ===")
-            print("Task: \(taskDescription)")
-            print("Active Windows: \(windows.joined(separator: ", "))")
-            print("Image Size: \(image.size.width) x \(image.size.height)")
-            print("==================")
-            
-        } catch {
-            print("Failed to serialize request: \(error)")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type");
+            do {
+                request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+                print("📸 Analyzing screenshot for task: \(taskDescription.prefix(30))...")
+            } catch {
+            print("❌ Request serialization failed")
             DispatchQueue.main.async {
                 self.isAnalyzing = false
             }
@@ -371,13 +393,7 @@ struct ContentView: View {
                                 self.storeAnalysisInMongoDB(analysisData, image: image, windows: windows, taskDescription: taskDescription)
                             }
                             
-                            // Log the API response
-                            print("=== API RESPONSE ===")
-                            print("Score: \(analysisData["score"] ?? "N/A")/5")
-                            print("Description: \(analysisData["description"] ?? "N/A")")
-                            print("Short Description: \(analysisData["shortDescription"] ?? "N/A")")
-                            print("Suggestion: \(analysisData["suggestion"] ?? "N/A")")
-                            print("===================")
+                            print("✅ Analysis: \(analysisData["score"] ?? 0)/5 - \(analysisData["shortDescription"] ?? "Unknown")")
                             
                         } else {
                             print("Failed to parse JSON from completion_message text")
@@ -404,13 +420,7 @@ struct ContentView: View {
                                 self.storeAnalysisInMongoDB(analysisData, image: image, windows: windows, taskDescription: taskDescription)
                             }
                             
-                            // Log the API response
-                            print("=== API RESPONSE ===")
-                            print("Score: \(analysisData["score"] ?? "N/A")/5")
-                            print("Description: \(analysisData["description"] ?? "N/A")")
-                            print("Short Description: \(analysisData["shortDescription"] ?? "N/A")")
-                            print("Suggestion: \(analysisData["suggestion"] ?? "N/A")")
-                            print("===================")
+                            print("✅ Analysis: \(analysisData["score"] ?? 0)/5 - \(analysisData["shortDescription"] ?? "Unknown")")
                             
                         } else {
                             DispatchQueue.main.async {
@@ -452,9 +462,9 @@ struct ContentView: View {
             screenshot: image
         ) { success, error in
             if let error = error {
-                print("Failed to update MongoDB: \(error)")
+                print("❌ MongoDB update failed: \(error.localizedDescription)")
             } else {
-                print("Successfully updated MongoDB with new analysis and screenshot")
+                print("💾 MongoDB updated successfully")
             }
         }
     }
@@ -464,18 +474,15 @@ struct ContentView: View {
 
         func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
             guard let pixelBuffer = sampleBuffer.imageBuffer else {
-                print("No image buffer in sample - skipping this frame")
                 DispatchQueue.main.async { [weak self] in
                     self?.onCapture?(nil)
                 }
                 return
             }
             
-            // Additional validation
             let width = CVPixelBufferGetWidth(pixelBuffer)
             let height = CVPixelBufferGetHeight(pixelBuffer)
             guard width > 0 && height > 0 else {
-                print("Invalid pixel buffer dimensions: \(width)x\(height)")
                 DispatchQueue.main.async { [weak self] in
                     self?.onCapture?(nil)
                 }
@@ -487,7 +494,6 @@ struct ContentView: View {
             let nsImage = NSImage(size: rep.size)
             nsImage.addRepresentation(rep)
             
-            //print("Successfully captured screenshot: \(width)x\(height)")
             DispatchQueue.main.async { [weak self] in
                 self?.onCapture?(nsImage)
             }
@@ -520,6 +526,67 @@ struct ContentView: View {
             return "\(ownerName): \(windowName)"
         }
     }
+    
+    func fetchAssignmentFromMongoDB() {
+        mongoDBService.getAssignment(classroom: "1") { assignment, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    print("❌ Assignment fetch failed: \(error.localizedDescription)")
+                    return
+                }
+                
+                if let assignment = assignment {
+                    self.teacherTaskDescription = assignment
+                    print("📋 Assignment: \(assignment.prefix(50))...")
+                } else {
+                    print("📋 No assignment found")
+                }
+            }
+        }
+    }
+    
+    func getColorForSuggestion(_ suggestion: String) -> Color {
+        let lowercased = suggestion.lowercased()
+        if lowercased.contains("on-task") {
+            return .green
+        } else if lowercased.contains("sussy") || lowercased.contains("sussi") {
+            return .orange
+        } else if lowercased.contains("needs reminder") {
+            return .red
+        } else {
+            return .secondary
+        }
+    }
+}
+
+// MARK: - Helper Functions
+
+func scaleImageTo720p(_ image: NSImage) -> NSImage {
+    let originalSize = image.size
+    let targetHeight: CGFloat = 720.0
+    
+    // Calculate the aspect ratio
+    let aspectRatio = originalSize.width / originalSize.height
+    let targetWidth = targetHeight * aspectRatio
+    let targetSize = NSSize(width: targetWidth, height: targetHeight)
+    
+    // If the image is already smaller or equal to 720p, return the original
+    if originalSize.height <= targetHeight {
+        return image
+    }
+    
+    // Create a new image with the target size
+    let resizedImage = NSImage(size: targetSize)
+    resizedImage.lockFocus()
+    
+    // Draw the original image scaled to the new size
+    image.draw(in: NSRect(origin: .zero, size: targetSize))
+    
+    resizedImage.unlockFocus()
+    
+    print("🔄 Scaled: \(Int(originalSize.width))x\(Int(originalSize.height)) → \(Int(targetSize.width))x\(Int(targetSize.height))")
+    
+    return resizedImage
 }
 
 #Preview {

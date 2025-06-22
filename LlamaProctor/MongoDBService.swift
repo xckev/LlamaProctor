@@ -240,10 +240,10 @@ class MongoDBService: ObservableObject {
     private func updateHistory(currentHistory: [String]?, newDescription: String) -> [String] {
         var history = currentHistory ?? []
         
-        print("=== HISTORY UPDATE ===")
-        print("Current history count: \(history.count)")
-        print("Current history: \(history)")
-        print("Adding new description: \(newDescription)")
+        //print("=== HISTORY UPDATE ===")
+        //print("Current history count: \(history.count)")
+        //print("Current history: \(history)")
+        //print("Adding new description: \(newDescription)")
         
         // Add the new description to the beginning of the list
         history.insert(newDescription, at: 0)
@@ -253,9 +253,9 @@ class MongoDBService: ObservableObject {
             history = Array(history.prefix(60))
         }
         
-        print("New history count: \(history.count)")
-        print("New history: \(history)")
-        print("=====================")
+        //print("New history count: \(history.count)")
+        //print("New history: \(history)")
+        //print("=====================")
         
         return history
     }
@@ -340,7 +340,7 @@ class MongoDBService: ObservableObject {
                     if let document = document {
                         // Convert BSONDocument to [String: Any] for compatibility
                         let documentDict = self.convertBSONDocumentToDictionary(document)
-                        print("✅ Document found: \(documentDict)")
+                        print("✅ Document found")
                         completion(documentDict, nil)
                     } else {
                         print("❌ Document not found")
@@ -457,4 +457,52 @@ class MongoDBService: ObservableObject {
             }
         }
     }
-} 
+    
+    // MARK: - Assignment Management
+    
+    func getAssignment(classroom: String, completion: @escaping (String?, Error?) -> Void) {
+        // Use background queue for MongoDB operations
+        DispatchQueue.global(qos: .background).async { [weak self] in
+            guard let client = self?.client else {
+                let error = NSError(domain: "MongoDBService", code: 1000, userInfo: [NSLocalizedDescriptionKey: "MongoDB client not available"])
+                DispatchQueue.main.async {
+                    completion(nil, error)
+                }
+                return
+            }
+            
+            do {
+                // Get the assignments collection
+                let database = client.db(self?.databaseName ?? "LlamaProctorDB")
+                let assignmentsCollection = database.collection("assignments", withType: BSONDocument.self)
+                
+                // Query for assignment by classroom
+                let query: BSONDocument = ["classroom": BSON(stringLiteral: classroom)]
+                
+                if let assignmentDoc = try assignmentsCollection.findOne(query) {
+                    // Extract the description field
+                    if let description = assignmentDoc["description"]?.stringValue {
+                        DispatchQueue.main.async {
+                            completion(description, nil)
+                        }
+                    } else {
+                        DispatchQueue.main.async {
+                            completion(nil, NSError(domain: "MongoDBService", code: 1001, userInfo: [NSLocalizedDescriptionKey: "No description field found in assignment document"]))
+                        }
+                    }
+                } else {
+                    // No assignment found for this classroom
+                    DispatchQueue.main.async {
+                        completion(nil, nil)
+                    }
+                }
+                
+            } catch {
+                DispatchQueue.main.async {
+                    print("❌ Failed to fetch assignment from MongoDB: \(error.localizedDescription)")
+                    completion(nil, error)
+                }
+            }
+        }
+    }
+}
