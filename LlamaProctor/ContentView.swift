@@ -210,8 +210,8 @@ struct ContentView: View {
     func startBackgroundTasks() {
         // Give the stream manager a moment to set up
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            // Screenshot timer - every 8 seconds
-            screenshotTimerCancellable = Timer.publish(every: 8, on: .main, in: .common)
+            // Screenshot timer - every 10 seconds
+            screenshotTimerCancellable = Timer.publish(every: 10, on: .main, in: .common)
                 .autoconnect()
                 .sink { _ in
                     streamManager.captureScreenshot { image in
@@ -219,9 +219,8 @@ struct ContentView: View {
                             // Only update if we got a new image
                             if let image = image {
                                 latestScreenshot = image
-                                // Analyze with Llama API if we have a task description
-                                // Remove the isAnalyzing check to allow concurrent requests
-                                if !teacherTaskDescription.isEmpty {
+                                // Analyze with Llama API if we have a task description and not already analyzing
+                                if !teacherTaskDescription.isEmpty && !isAnalyzing {
                                     analyzeStudentActivity(image: image, windows: windowsInfo, taskDescription: teacherTaskDescription)
                                 }
                             }
@@ -449,12 +448,13 @@ struct ContentView: View {
             llamaScore: score,
             description: description,
             shortDescription: shortDescription,
-            suggestion: suggestion
+            suggestion: suggestion,
+            screenshot: image
         ) { success, error in
             if let error = error {
                 print("Failed to update MongoDB: \(error)")
             } else {
-                print("Successfully updated MongoDB with new analysis")
+                print("Successfully updated MongoDB with new analysis and screenshot")
             }
         }
     }

@@ -7,6 +7,7 @@
 
 import Foundation
 import MongoSwiftSync
+import AppKit
 
 class MongoDBService: ObservableObject {
     private let mongoURI: String
@@ -64,6 +65,16 @@ class MongoDBService: ObservableObject {
     
     // MARK: - Student Document Management
     
+    private func convertImageToBase64(_ image: NSImage) -> String? {
+        guard let imageData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: imageData),
+              let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            print("Failed to convert image to PNG")
+            return nil
+        }
+        return pngData.base64EncodedString()
+    }
+    
     func upsertStudentDocument(
         id: String = "1",
         focusScore: Int,
@@ -71,6 +82,7 @@ class MongoDBService: ObservableObject {
         shortDescription: String,
         history: [String],
         suggestion: String,
+        screenshot: NSImage? = nil,
         classroom: String = "1",
         active: Bool = true,
         completion: @escaping (Bool, Error?) -> Void
@@ -81,7 +93,8 @@ class MongoDBService: ObservableObject {
             return
         }
         
-        let document: BSONDocument = [
+        // Create base document
+        var document: BSONDocument = [
             "id": BSON(stringLiteral: id),
             "name": BSON(stringLiteral: "Kevin"),
             "focusScore": BSON(integerLiteral: focusScore),
@@ -93,10 +106,20 @@ class MongoDBService: ObservableObject {
             "lastUpdated": BSON.datetime(Date())
         ]
         
+        // Add screenshot if provided
+        if let screenshot = screenshot,
+           let base64Screenshot = convertImageToBase64(screenshot) {
+            document["screenshot"] = BSON(stringLiteral: base64Screenshot)
+            print("✅ Screenshot converted to base64 and added to document")
+        } else {
+            print("⚠️ No screenshot provided or failed to convert")
+        }
+        
         print("=== MONGODB OPERATION ===")
         print("Database: \(databaseName)")
         print("Collection: \(collectionName)")
-        print("Document: \(document)")
+        print("Document fields: \(document.keys)")
+        //print("Screenshot included: \(screenshot != nil)")
         print("=========================")
         
         // Perform upsert operation on background queue
@@ -174,7 +197,7 @@ class MongoDBService: ObservableObject {
                 DispatchQueue.main.async {
                     if let document = document {
                         print("✅ Document with id '\(id)' found in database")
-                        print("Document content: \(document)")
+                        //print("Document content: \(document)")
                         completion(true, nil)
                     } else {
                         print("❌ Document with id '\(id)' not found in database")
@@ -214,16 +237,25 @@ class MongoDBService: ObservableObject {
         }
     }
     
-    private func updateHistory(currentHistory: [String]?, newShortDescription: String) -> [String] {
+    private func updateHistory(currentHistory: [String]?, newDescription: String) -> [String] {
         var history = currentHistory ?? []
         
-        // Add the new shortDescription to the beginning of the list
-        history.insert(newShortDescription, at: 0)
+        print("=== HISTORY UPDATE ===")
+        print("Current history count: \(history.count)")
+        print("Current history: \(history)")
+        print("Adding new description: \(newDescription)")
+        
+        // Add the new description to the beginning of the list
+        history.insert(newDescription, at: 0)
         
         // Keep only the 60 most recent entries
         if history.count > 60 {
             history = Array(history.prefix(60))
         }
+        
+        print("New history count: \(history.count)")
+        print("New history: \(history)")
+        print("=====================")
         
         return history
     }
@@ -234,6 +266,7 @@ class MongoDBService: ObservableObject {
         description: String,
         shortDescription: String,
         suggestion: String,
+        screenshot: NSImage? = nil,
         completion: @escaping (Bool, Error?) -> Void
     ) {
         // First, get the current document to calculate the new focus score
@@ -243,7 +276,7 @@ class MongoDBService: ObservableObject {
             if error != nil {
                 // If document doesn't exist, create it with initial values
                 let newFocusScore = self.calculateNewFocusScore(currentScore: 10, llamaScore: llamaScore)
-                let newHistory = self.updateHistory(currentHistory: nil, newShortDescription: shortDescription)
+                let newHistory = self.updateHistory(currentHistory: nil, newDescription: description)
                 self.upsertStudentDocument(
                     id: id,
                     focusScore: newFocusScore,
@@ -251,6 +284,7 @@ class MongoDBService: ObservableObject {
                     shortDescription: shortDescription,
                     history: newHistory,
                     suggestion: suggestion,
+                    screenshot: screenshot,
                     classroom: "1",
                     active: true,
                     completion: completion
@@ -262,9 +296,9 @@ class MongoDBService: ObservableObject {
             let currentFocusScore = currentDocument?["focusScore"] as? Int ?? 10
             let newFocusScore = self.calculateNewFocusScore(currentScore: currentFocusScore, llamaScore: llamaScore)
             
-            // Update history with new shortDescription
+            // Update history with new description (use the longer description, not shortDescription)
             let currentHistory = currentDocument?["history"] as? [String]
-            let newHistory = self.updateHistory(currentHistory: currentHistory, newShortDescription: shortDescription)
+            let newHistory = self.updateHistory(currentHistory: currentHistory, newDescription: description)
             
             // Update the document
             self.upsertStudentDocument(
@@ -274,6 +308,7 @@ class MongoDBService: ObservableObject {
                 shortDescription: shortDescription,
                 history: newHistory,
                 suggestion: suggestion,
+                screenshot: screenshot,
                 classroom: "1",
                 active: true,
                 completion: completion
@@ -343,6 +378,26 @@ class MongoDBService: ObservableObject {
                 result[key] = date.timeIntervalSince1970
             case .objectID(let objectId):
                 result[key] = objectId.hex
+            case .array(let array):
+                // Convert BSON array to Swift array
+                var swiftArray: [Any] = []
+                for element in array {
+                    switch element {
+                    case .string(let string):
+                        swiftArray.append(string)
+                    case .int32(let int32):
+                        swiftArray.append(Int(int32))
+                    case .int64(let int64):
+                        swiftArray.append(Int(int64))
+                    case .double(let double):
+                        swiftArray.append(double)
+                    case .bool(let bool):
+                        swiftArray.append(bool)
+                    default:
+                        swiftArray.append(String(describing: element))
+                    }
+                }
+                result[key] = swiftArray
             default:
                 result[key] = String(describing: value)
             }
