@@ -1,5 +1,7 @@
 # LlamaProctor
 
+Meta Llama 4 Hackathon 1st Place winning project - https://x.com/MetaforDevs/status/1937233386453762423
+
 A macOS application that monitors student activity during class using AI analysis and stores the data in MongoDB. The app automatically retrieves assignments from teachers and analyzes student screen activity in real-time.
 
 ## Features
